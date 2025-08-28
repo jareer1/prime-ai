@@ -4,235 +4,302 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 
+// Load environment variables
 dotenv.config();
+
+// ------------------
+// Configuration
+// ------------------
+const config = {
+  port: process.env.PORT || 3000,
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY,
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+  },
+  brave: {
+    apiKey: process.env.BRAVE_API_KEY
+  }
+};
+
+// Validate required environment variables
+const requiredEnvVars = [
+  'OPENAI_API_KEY'
+];
+
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
+
+// ------------------
+// Initialize Express App
+// ------------------
 const app = express();
+
+// Middleware
 app.use(express.json({ limit: "1mb" }));
 
-// ------------------
-// ENV CONFIG
-// ------------------
-const AZURE_OPENAI_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT; 
-const AZURE_OPENAI_KEY = process.env.AZURE_OPENAI_API_KEY;
-const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT; 
-const AZURE_OPENAI_API_VERSION = process.env.AZURE_OPENAI_API_VERSION;
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
-
-const client = new OpenAI({
-  apiKey: AZURE_OPENAI_KEY,
-  baseURL: `${AZURE_OPENAI_ENDPOINT.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(AZURE_OPENAI_DEPLOYMENT)}`,
-  defaultQuery: { "api-version": process.env.AZURE_OPENAI_API_VERSION },
-  defaultHeaders: { "api-key": AZURE_OPENAI_KEY }
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
 });
 
 // ------------------
-// Helpers
+// Initialize OpenAI Client
 // ------------------
-function extractJsonFromText(text) {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    return null;
-  }
-}
-
-async function braveSearch(query, count = 6) {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
-  const r = await fetch(url, {
-    headers: { "X-Subscription-Token": BRAVE_API_KEY }
-  });
-
-  if (!r.ok) {
-    throw new Error(`Brave API error: ${r.status} ${await r.text()}`);
-  }
-
-  const data = await r.json();
-  return (data.web?.results || []).map(item => ({
-    title: item.title || "",
-    link: item.url || "",
-    snippet: item.description || ""
-  }));
-}
-
-function pickNutritionAndIngredients(results) {
-  const nutrition = results.filter(r =>
-    /nutrition|nutrition facts|label/i.test(r.title + r.snippet)
-  );
-  const ingredients = results.filter(r =>
-    /ingredient/i.test(r.title + r.snippet)
-  );
-  return {
-    nutrition: nutrition.slice(0, 3),
-    ingredients: ingredients.slice(0, 3)
-  };
-}
+const openAIClient = new OpenAI({
+  apiKey: config.openai.apiKey
+});
 
 // ------------------
-// Endpoint
+// Utility Functions
 // ------------------
-app.post("/analyze-image", async (req, res) => {
-  try {
-    const { imageUrl } = req.body;
-    console.log('Image URL:', imageUrl);
-    if (!imageUrl) return res.status(400).json({ error: "imageUrl required" });
-    console.log('AZURE_OPENAI_DEPLOYMENT:', AZURE_OPENAI_DEPLOYMENT);
-    console.log('AZURE_OPENAI_ENDPOINT:', AZURE_OPENAI_ENDPOINT);
-    console.log('AZURE_OPENAI_KEY:', AZURE_OPENAI_KEY);
-    console.log('AZURE_OPENAI_API_VERSION:', AZURE_OPENAI_API_VERSION);
-    const response = await client.chat.completions.create({
-      model: AZURE_OPENAI_DEPLOYMENT, // deployment name from Azure portal
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `You are analyzing a packaged product image. 
-    Return only JSON with fields:
-    {
-      "product_name": string|null,
-      "brand": string|null,
-      "net_weight": string|null,
-      "barcode_or_upc": string|null,
-      "visible_text": string[],
-      "confidence": "high"|"medium"|"low"
-    }`
-            },
-            {
-              type: "image_url",
-              image_url: { url: imageUrl }
-            }
-          ]
-        }
-      ]
-    });
+class Utils {
+  /**
+   * Extract JSON from text response
+   * @param {string} text - Text containing JSON
+   * @returns {object|null} Parsed JSON or null
+   */
+  static extractJsonFromText(text) {
+    if (!text) return null;
     
-    // 1) Analyze product with Azure OpenAI
-    console.log('Response:', response);
-    const productData = extractJsonFromText(response.choices[0].message.content) || { product_name: null, brand: null };
-    console.log('Product data:', productData);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (error) {
+      console.warn('Failed to parse JSON from text:', error.message);
+      return null;
+    }
+  }
 
-    // 2) Build a single combined search query (brand + product)
+  /**
+   * Format search results for LLM consumption
+   * @param {Array} results - Search results array
+   * @param {number} maxResults - Maximum number of results
+   * @param {number} maxSnippetLen - Maximum snippet length
+   * @returns {string} Formatted search results
+   */
+  static formatSearchResultsForLLM(results, maxResults = 5, maxSnippetLen = 300) {
+    return results
+      .slice(0, maxResults)
+      .map((r, i) => {
+        const snippet = (r.snippet || "").replace(/\s+/g, " ").trim().slice(0, maxSnippetLen);
+        return `${i + 1}. Title: ${r.title}\n   Snippet: ${snippet}\n   URL: ${r.link}`;
+      })
+      .join("\n\n");
+  }
+
+  /**
+   * Pick nutrition and ingredients from search results
+   * @param {Array} results - Search results array
+   * @returns {object} Filtered nutrition and ingredients results
+   */
+  static pickNutritionAndIngredients(results) {
+    const nutrition = results.filter(r =>
+      /nutrition|nutrition facts|label/i.test(r.title + r.snippet)
+    );
+    const ingredients = results.filter(r =>
+      /ingredient/i.test(r.title + r.snippet)
+    );
+    
+    return {
+      nutrition: nutrition.slice(0, 3),
+      ingredients: ingredients.slice(0, 3)
+    };
+  }
+}
+
+// ------------------
+// External API Services
+// ------------------
+class BraveSearchService {
+  /**
+   * Search using Brave API
+   * @param {string} query - Search query
+   * @param {number} count - Number of results
+   * @returns {Promise<Array>} Search results
+   */
+  static async search(query, count = 6) {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
+    
+    try {
+      const response = await fetch(url, {
+        headers: { "X-Subscription-Token": config.brave.apiKey }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Brave API error: ${response.status} ${await response.text()}`);
+      }
+
+      const data = await response.json();
+      return (data.web?.results || []).map(item => ({
+        title: item.title || "",
+        link: item.url || "",
+        snippet: item.description || ""
+      }));
+    } catch (error) {
+      console.error('Brave search failed:', error.message);
+      throw error;
+    }
+  }
+}
+
+class OpenAIService {
+  /**
+   * Create chat completion
+   * @param {Array} messages - Chat messages
+   * @param {object} options - Additional options
+   * @returns {Promise<object>} OpenAI response
+   */
+  static async createChatCompletion(messages, options = {}) {
+    const defaultOptions = {
+      model: config.openai.model,
+      temperature: 0.2,
+      max_tokens: 1000
+    };
+
+    try {
+      return await openAIClient.chat.completions.create({
+        ...defaultOptions,
+        ...options,
+        messages
+      });
+    } catch (error) {
+      console.error('OpenAI API call failed:', error.message);
+      throw error;
+    }
+  }
+}
+
+// ------------------
+// Business Logic Services
+// ------------------
+class ImageAnalysisService {
+  /**
+   * Analyze product image
+   * @param {string} imageUrl - URL of the image to analyze
+   * @returns {Promise<object>} Product data from image
+   */
+  static async analyzeProductImage(imageUrl) {
+    const response = await OpenAIService.createChatCompletion([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `You are analyzing a packaged product image. 
+Return only JSON with fields:
+{
+  "product_name": string|null,
+  "brand": string|null,
+  "net_weight": string|null,
+  "barcode_or_upc": string|null,
+  "visible_text": string[],
+  "confidence": "high"|"medium"|"low"
+}`
+          },
+          {
+            type: "image_url",
+            image_url: { url: imageUrl }
+          }
+        ]
+      }
+    ]);
+
+    return Utils.extractJsonFromText(response.choices[0].message.content) || { 
+      product_name: null, 
+      brand: null 
+    };
+  }
+
+  /**
+   * Build search query from product data
+   * @param {object} productData - Product information
+   * @returns {string} Search query
+   */
+  static buildSearchQuery(productData) {
     const brand = productData.brand?.toString()?.trim() || "";
     const pname = productData.product_name?.toString()?.trim() || "";
     const barcode = productData.barcode_or_upc?.toString()?.trim() || "";
 
-    // Prefer brand + product. If missing brand, use product only. Always include "nutrition facts ingredients".
     let primaryQuery = [brand, pname].filter(Boolean).join(" ").trim();
+    
     if (!primaryQuery && barcode) {
-      primaryQuery = barcode; // fallback to barcode only
+      primaryQuery = barcode;
     }
+    
     if (!primaryQuery) {
-      // final fallback: visible_text joined
       primaryQuery = (productData.visible_text || []).slice(0, 4).join(" ").trim();
     }
-    primaryQuery = (" nutrition facts, ingredients for "+primaryQuery ).trim();
+    
+    return (" nutrition facts, ingredients for " + primaryQuery).trim();
+  }
 
-    // 3) Query Brave once (with a small retry/fallback if no results)
-    let allResults = [];
+  /**
+   * Perform web search with fallback strategies
+   * @param {string} primaryQuery - Primary search query
+   * @param {object} productData - Product data for fallback queries
+   * @returns {Promise<Array>} Search results
+   */
+  static async performWebSearch(primaryQuery, productData) {
+    const allResults = [];
+    
     try {
-      allResults.push({ query: primaryQuery, results: await braveSearch(primaryQuery, 8) });
-    } catch (err) {
-      console.warn("Primary Brave search failed:", err.message);
-      // Optional: fallback to a simpler query (product only)
+      allResults.push({ 
+        query: primaryQuery, 
+        results: await BraveSearchService.search(primaryQuery, 8) 
+      });
+    } catch (error) {
+      console.warn("Primary Brave search failed:", error.message);
+      
+      // Fallback to product name only
+      const pname = productData.product_name?.toString()?.trim() || "";
       if (pname && pname !== primaryQuery) {
-        const fallbackQ = `${pname} nutrition facts ingredients`;
+        const fallbackQuery = `${pname} nutrition facts ingredients`;
         try {
-          await new Promise(r => setTimeout(r, 400)); // small delay
-          allResults.push({ query: fallbackQ, results: await braveSearch(fallbackQ, 8) });
-        } catch (err2) {
-          console.warn("Fallback Brave search failed:", err2.message);
+          await new Promise(resolve => setTimeout(resolve, 400));
+          allResults.push({ 
+            query: fallbackQuery, 
+            results: await BraveSearchService.search(fallbackQuery, 8) 
+          });
+        } catch (fallbackError) {
+          console.warn("Fallback Brave search failed:", fallbackError.message);
         }
       }
-      // Optional: try barcode if present
+      
+      // Try barcode if present
+      const barcode = productData.barcode_or_upc?.toString()?.trim() || "";
       if (barcode && allResults.length === 0) {
         try {
-          await new Promise(r => setTimeout(r, 400));
-          allResults.push({ query: barcode + " nutrition facts", results: await braveSearch(barcode, 8) });
-        } catch (err3) {
-          console.warn("Barcode Brave search failed:", err3.message);
+          await new Promise(resolve => setTimeout(resolve, 400));
+          allResults.push({ 
+            query: barcode + " nutrition facts", 
+            results: await BraveSearchService.search(barcode, 8) 
+          });
+        } catch (barcodeError) {
+          console.warn("Barcode Brave search failed:", barcodeError.message);
         }
       }
     }
 
-    // flatten and pick
-    const flatResults = allResults.flatMap(g => g.results || []);
-    const picked = pickNutritionAndIngredients(flatResults);
+    return allResults.flatMap(group => group.results || []);
+  }
 
-    // --------- add helper (if not present) ----------
-    function formatSearchResultsForLLM(results, maxResults = 5, maxSnippetLen = 300) {
-      return results
-        .slice(0, maxResults)
-        .map((r, i) => {
-          const snippet = (r.snippet || "").replace(/\s+/g, " ").trim().slice(0, maxSnippetLen);
-          return `${i + 1}. Title: ${r.title}\n   Snippet: ${snippet}\n   URL: ${r.link}`;
-        })
-        .join("\n\n");
-    }
-    // -------------------------------------------------
+  /**
+   * Extract nutrition information from search results
+   * @param {Array} searchResults - Web search results
+   * @param {object} productData - Product data
+   * @returns {Promise<object>} Extracted nutrition information
+   */
+  static async extractNutritionInfo(searchResults, productData) {
+    const topResults = searchResults.slice(0, 6);
+    const searchBlock = Utils.formatSearchResultsForLLM(topResults, 6, 300);
 
-    // --- insert after you build flatResults & picked ---
-    const topResults = flatResults.slice(0, 6); // take top 6 raw results
-    const searchBlock = formatSearchResultsForLLM(topResults, 6, 300);
-
-    // Fetch page content for top results
-    async function fetchPageText(url, maxLen = 4000) {
-      try {
-        const resp = await fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +https://example.com/bot)" }
-        });
-        if (!resp.ok) return null;
-        const html = await resp.text();
-
-        let cheerio;
-        try { cheerio = (await import('cheerio')).default; } catch (e) { return null; }
-
-        const $ = cheerio.load(html);
-        const pageTextParts = [];
-
-        // 1) Elements that contain 'Ingredients' label
-        $('*:contains("Ingredients")').each((i, el) => {
-          const text = $(el).text().replace(/\s+/g, ' ').trim();
-          if (/Ingredients?:/i.test(text)) {
-            let block = text;
-            const next = $(el).next();
-            if (next && next.length) block += ' ' + $(next).text().replace(/\s+/g, ' ').trim();
-            pageTextParts.push(block);
-          }
-        });
-
-        // 2) 'Nutrition Facts' or 'Nutrition' headings -> capture table or surrounding text
-        $('*:contains("Nutrition Facts"), *:contains("Nutrition")').each((i, el) => {
-          const text = $(el).text().replace(/\s+/g, ' ').trim();
-          if (/Nutrition Facts|Nutrition:/i.test(text)) {
-            const tbl = $(el).next('table');
-            let block = text;
-            if (tbl && tbl.length) {
-              block += ' ' + tbl.text().replace(/\s+/g, ' ').trim();
-            } else {
-              let sib = $(el).next();
-              let collected = 0;
-              while (sib && sib.length && collected < 3) {
-                block += ' ' + $(sib).text().replace(/\s+/g, ' ').trim();
-                sib = sib.next();
-                collected++;
-              }
-            }
-            pageTextParts.push(block);
-          }
-        });
-
-        return pageTextParts.join('\n\n').slice(0, maxLen);
-      } catch (err) {
-        console.warn(`Failed to fetch page content from ${url}:`, err.message);
-        return null;
-      }
-    }
-
-    // Fetch page content for top 3 results
-    
-    // Enhanced system prompt with structured schema
     const systemPrompt = `You are a helpful assistant that extracts nutrition information from web search results. 
 
 Analyze the provided search results and page content to find nutrition facts and ingredients for the product. You can also use your general knowledge about common food products.
@@ -279,9 +346,7 @@ Guidelines:
 - Look for nutrition facts tables, ingredient lists, and product information
 - If you find specific values, include them
 - For ingredients, list them as individual items
-- Return only valid JSON, no other text
-`;
-    console.log('enhancedSearchBlock',searchBlock)
+- Return only valid JSON, no other text`;
 
     const userPrompt = `Here's the product information from the image: ${JSON.stringify(productData)}
 
@@ -291,53 +356,244 @@ ${searchBlock}
 
 Please analyze this information and extract any nutrition facts and ingredients you can find. If you don't find specific information, you can use your general knowledge about similar products. Return your response as JSON.`;
 
-    let finalExtract = null;
-    try {
-      const llmResp = await client.chat.completions.create({
-        model: AZURE_OPENAI_DEPLOYMENT,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        temperature: 0.2,
-        max_tokens: 1000
-      });
+    const response = await OpenAIService.createChatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt }
+    ]);
 
-      const llmRaw = llmResp.choices?.[0]?.message?.content || "";
-      finalExtract = extractJsonFromText(llmRaw);
+    const llmRaw = response.choices?.[0]?.message?.content || "";
+    return Utils.extractJsonFromText(llmRaw);
+  }
+}
 
-      if (!finalExtract) {
-        // model did not return strict JSON: return helpful debug info
-        return res.json({
-          productData,
-          searchQuery: primaryQuery,
-          searchResults: topResults,
-          llmRaw,
-          note: "LLM did not return valid JSON. See llmRaw for output."
-        });
-      }
+class TestosteroneAnalysisService {
+  /**
+   * Analyze food for testosterone impact
+   * @param {string} name - Food name
+   * @param {string} kcal - Calories
+   * @param {number} portion_g - Portion in grams
+   * @returns {Promise<object>} Testosterone impact analysis
+   */
+  static async analyzeTestosteroneImpact(name, kcal, portion_g) {
+    const systemPrompt = `You are a nutrition expert specializing in testosterone optimization through diet. Analyze the given food item and provide detailed testosterone impact assessment.
 
-      // Success: return parsed structured data
+Return ONLY valid JSON with this exact structure:
+{
+  "status": true,
+  "message": null,
+  "data": {
+    "t_score_impact": {
+      "label": "Optimized" | "Moderate" | "Poor",
+      "score_perc": number (0-100),
+      "macro_balance": "Good" | "Fair" | "Poor",
+      "processed_profile": "Low" | "Medium" | "High",
+      "hormone_disruptor": number (0-2, where 0 is no, 1 is mild, 2 is high)
+    },
+    "micros": {
+      "protein_g": number,
+      "carbs": {
+        "fiber_g": number,
+        "sugar_g": number,
+        "added_sugar_g": number
+      },
+      "fats": {
+        "saturated_g": number,
+        "trans_g": number
+      },
+      "cholesterol_mg": number
+    }
+  }
+}
+
+Guidelines for testosterone impact:
+- High protein foods (especially red meat, eggs, fish) boost testosterone
+- Healthy fats (omega-3s, monounsaturated) support hormone production
+- Fiber helps with insulin sensitivity and testosterone
+- Processed foods, trans fats, and excessive sugar negatively impact testosterone
+- Cholesterol is a precursor to testosterone synthesis
+- Score 90-100: Excellent for testosterone
+- Score 70-89: Good for testosterone  
+- Score 50-69: Moderate impact
+- Score 0-49: Poor for testosterone
+
+Use your knowledge of nutrition and testosterone optimization to provide accurate assessments.`;
+
+    const userPrompt = `Analyze this food item for testosterone impact:
+
+Food Name: ${name}
+Calories: ${kcal} kcal
+Portion Size: ${portion_g} grams
+
+Please provide the testosterone impact analysis in the specified JSON format.`;
+
+    const response = await OpenAIService.createChatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt }
+    ], {
+      temperature: 0.1,
+      max_tokens: 800
+    });
+
+    const responseContent = response.choices[0].message.content;
+    return Utils.extractJsonFromText(responseContent);
+  }
+}
+
+// ------------------
+// Request Validation
+// ------------------
+class ValidationService {
+  /**
+   * Validate image analysis request
+   * @param {object} body - Request body
+   * @returns {object} Validation result
+   */
+  static validateImageAnalysisRequest(body) {
+    if (!body.imageUrl) {
+      return { isValid: false, error: "imageUrl is required" };
+    }
+    return { isValid: true };
+  }
+
+  /**
+   * Validate testosterone analysis request
+   * @param {object} body - Request body
+   * @returns {object} Validation result
+   */
+  static validateTestosteroneAnalysisRequest(body) {
+    const { name, kcal, portion_g } = body;
+    
+    if (!name || !kcal || !portion_g) {
+      return { 
+        isValid: false, 
+        error: "Missing required fields: name, kcal, and portion_g are required" 
+      };
+    }
+    
+    return { isValid: true };
+  }
+}
+
+// ------------------
+// API Routes
+// ------------------
+app.post("/analyze-image", async (req, res) => {
+  try {
+    // Validate request
+    const validation = ValidationService.validateImageAnalysisRequest(req.body);
+    if (!validation.isValid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const { imageUrl } = req.body;
+    console.log('Processing image analysis for URL:', imageUrl);
+
+    // Analyze product image
+    const productData = await ImageAnalysisService.analyzeProductImage(imageUrl);
+    console.log('Product data extracted:', productData);
+
+    // Build search query
+    const primaryQuery = ImageAnalysisService.buildSearchQuery(productData);
+    console.log('Search query:', primaryQuery);
+
+    // Perform web search
+    const searchResults = await ImageAnalysisService.performWebSearch(primaryQuery, productData);
+    console.log(`Found ${searchResults.length} search results`);
+
+    // Extract nutrition information
+    const finalExtract = await ImageAnalysisService.extractNutritionInfo(searchResults, productData);
+
+    if (!finalExtract) {
       return res.json({
         productData,
         searchQuery: primaryQuery,
-        searchResults: topResults,
-        extracted: finalExtract
-      });
-
-    } catch (err) {
-      console.error("LLM extraction error:", err);
-      return res.status(500).json({
-        productData,
-        searchQuery: primaryQuery,
-        searchResults: topResults,
-        error: err.message
+        searchResults: searchResults.slice(0, 6),
+        note: "LLM did not return valid JSON"
       });
     }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "internal_error", details: err.message });
+
+    // Return successful response
+    return res.json({
+      data: finalExtract
+    });
+
+  } catch (error) {
+    console.error('Image analysis error:', error);
+    res.status(500).json({ 
+      error: "internal_error", 
+      details: error.message 
+    });
   }
 });
 
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.post("/analyze-testosterone-impact", async (req, res) => {
+  try {
+    // Validate request
+    const validation = ValidationService.validateTestosteroneAnalysisRequest(req.body);
+    if (!validation.isValid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const { name, kcal, portion_g } = req.body;
+    console.log('Processing testosterone analysis for:', name);
+
+    // Analyze testosterone impact
+    const result = await TestosteroneAnalysisService.analyzeTestosteroneImpact(name, kcal, portion_g);
+
+    if (!result) {
+      return res.status(500).json({
+        error: "Failed to parse AI response"
+      });
+    }
+
+    return res.json(result);
+
+  } catch (error) {
+    console.error('Testosterone analysis error:', error);
+    res.status(500).json({ 
+      error: "internal_error", 
+      details: error.message 
+    });
+  }
+});
+
+// ------------------
+// Health Check Endpoint
+// ------------------
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "healthy", 
+    timestamp: new Date().toISOString(),
+    services: {
+      openai: !!config.openai.apiKey,
+      brave: !!config.brave.apiKey
+    }
+  });
+});
+
+// ------------------
+// Error Handling Middleware
+// ------------------
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ 
+    error: "internal_server_error",
+    message: "An unexpected error occurred"
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: "not_found",
+    message: "Endpoint not found" 
+  });
+});
+
+// ------------------
+// Start Server
+// ------------------
+app.listen(config.port, () => {
+  console.log(`Server running on port ${config.port}`);
+  console.log(`Health check available at: http://localhost:${config.port}/health`);
+});

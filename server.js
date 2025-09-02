@@ -93,25 +93,6 @@ class Utils {
       })
       .join("\n\n");
   }
-
-  /**
-   * Pick nutrition and ingredients from search results
-   * @param {Array} results - Search results array
-   * @returns {object} Filtered nutrition and ingredients results
-   */
-  static pickNutritionAndIngredients(results) {
-    const nutrition = results.filter(r =>
-      /nutrition|nutrition facts|label/i.test(r.title + r.snippet)
-    );
-    const ingredients = results.filter(r =>
-      /ingredient/i.test(r.title + r.snippet)
-    );
-    
-    return {
-      nutrition: nutrition.slice(0, 3),
-      ingredients: ingredients.slice(0, 3)
-    };
-  }
 }
 
 // ------------------
@@ -159,7 +140,7 @@ class OpenAIService {
   static async createChatCompletion(messages, options = {}) {
     const defaultOptions = {
       model: config.openai.model,
-      temperature: 0.2,
+      temperature: 0.1,
       max_tokens: 1000
     };
 
@@ -192,7 +173,8 @@ class ImageAnalysisService {
         content: [
           {
             type: "text",
-            text: `You are analyzing a packaged product image. 
+            text: `You are analyzing the image of a packaged product. Analyze the image for branding and product identification, and for detailed nutrition and ingredient information.
+
 Return only JSON with fields:
 {
   "product_name": string|null,
@@ -213,7 +195,7 @@ Return only JSON with fields:
 
     return Utils.extractJsonFromText(response.choices[0].message.content) || { 
       product_name: null, 
-      brand: null 
+      brand: null
     };
   }
 
@@ -289,104 +271,73 @@ Return only JSON with fields:
 
     return allResults.flatMap(group => group.results || []);
   }
+}
 
+class ComprehensiveAnalysisService {
   /**
-   * Extract nutrition information from search results
+   * Analyze food comprehensively for nutrition and testosterone impact
+   * @param {object} productData - Product data from image analysis
    * @param {Array} searchResults - Web search results
-   * @param {object} productData - Product data
-   * @returns {Promise<object>} Extracted nutrition information
+   * @returns {Promise<object>} Comprehensive analysis
    */
-  static async extractNutritionInfo(searchResults, productData) {
+  static async analyzeComprehensive(productData, searchResults) {
     const topResults = searchResults.slice(0, 6);
     const searchBlock = Utils.formatSearchResultsForLLM(topResults, 6, 300);
 
-    const systemPrompt = `You are a helpful assistant that extracts nutrition information from web search results. 
-
-Analyze the provided search results and page content to find nutrition facts and ingredients for the product. You can also use your general knowledge about common food products.
-
-Please return your response as JSON with this structure:
-{
-  "product_name": "string or null",
-  "nutrition_facts_text": "full nutrition facts text ",
-  "nutrition": {
-    "serving_size": "string ",
-    "calories": "string ", 
-    "total_fat": "string",
-    "saturated_fat": "string",
-    "trans_fat": "string,
-    "cholesterol": "string",
-    "sodium": "string ",
-    "total_carbohydrate": "string",
-    "dietary_fiber": "string",
-    "total_sugars": "string",
-    "added_sugars": "string ",
-    "protein": "string",
-    "vitamin_d": "string",
-    "calcium": "string",
-    "iron": "string",
-    "potassium": "string"
-  },
-  "ingredients": [
-    {
-      "text": "ingredient name",
-    }
-  ],
-  "confidence": "high, medium, or low",
-  "sources": [
-    {
-      "title": "string",
-      "url": "string",
-      "snippet": "string", 
-      "used_for": ["nutrition", "ingredients", or "both"]
-    }
-  ]
-}
-
-Guidelines:
-- Look for nutrition facts tables, ingredient lists, and product information
-- If you find specific values, include them
-- For ingredients, list them as individual items
-- Return only valid JSON, no other text`;
-
-    const userPrompt = `Here's the product information from the image: ${JSON.stringify(productData)}
-
-Below are web search results and page content that might contain nutrition information:
-
-${searchBlock}
-
-Please analyze this information and extract any nutrition facts and ingredients you can find. If you don't find specific information, you can use your general knowledge about similar products. Return your response as JSON.`;
-
-    const response = await OpenAIService.createChatCompletion([
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt }
-    ]);
-
-    const llmRaw = response.choices?.[0]?.message?.content || "";
-    return Utils.extractJsonFromText(llmRaw);
-  }
-}
-
-class TestosteroneAnalysisService {
-  /**
-   * Analyze food for testosterone impact
-   * @param {string} name - Food name
-   * @param {string} kcal - Calories
-   * @param {number} portion_g - Portion in grams
-   * @returns {Promise<object>} Testosterone impact analysis
-   */
-  static async analyzeTestosteroneImpact(name, kcal, portion_g) {
-    const systemPrompt = `You are a nutrition expert specializing in testosterone optimization through diet. Analyze the given food item and provide detailed testosterone impact assessment.
+    const systemPrompt = `You are a comprehensive nutrition and testosterone optimization expert. Analyze the product data and web search results to provide detailed analysis.
 
 Return ONLY valid JSON with this exact structure:
 {
   "status": true,
   "message": null,
   "data": {
+    "product_info": {
+      "product_name": "string",
+      "brand": "string",
+      "net_weight": "string",
+      "barcode_or_upc": "string",
+      "visible_text": ["string"]
+    },
+    "nutrition_facts": {
+      "serving_size": "string",
+      "calories": "string",
+      "total_fat": "string",
+      "saturated_fat": "string",
+      "trans_fat": "string",
+      "cholesterol": "string",
+      "sodium": "string",
+      "total_carbohydrate": "string",
+      "dietary_fiber": "string",
+      "total_sugars": "string",
+      "added_sugars": "string",
+      "protein": "string",
+      "vitamin_d": "string",
+      "calcium": "string",
+      "iron": "string",
+      "potassium": "string"
+    },
+    "ingredients": [
+      {
+        "text": "ingredient name",
+        "testosterone_impact": "positive|negative|neutral",
+        "notes": "brief explanation"
+      }
+    ],
+    "allergens": ["string"],
+    "seed_oils": ["list of oils used"],
+    "processed_profile": {
+      "score": number (1-10, where 1 is minimal processing, 10 is highly processed),
+      "level": "Low|Medium|High",
+      "added_synthetic_sugars": ["list of added or synthetic sugars"],
+      "additives": ["list of additives"],
+      "refined_carbs": ["list of refined carbohydrates"]
+    },
+    "estrogenic_compounds": ["list of estrogenic compounds"],
+    "microplastics": ["list of microplastics if any"],
     "t_score_impact": {
-      "label": "Optimized" | "Moderate" | "Poor",
+      "label": "Optimized|Moderate|Poor",
       "score_perc": number (0-100),
-      "macro_balance": "Good" | "Fair" | "Poor",
-      "processed_profile": "Low" | "Medium" | "High",
+      "macro_balance": "Good|Fair|Poor",
       "hormone_disruptor": number (0-2, where 0 is no, 1 is mild, 2 is high)
     },
     "micros": {
@@ -401,37 +352,45 @@ Return ONLY valid JSON with this exact structure:
         "trans_g": number
       },
       "cholesterol_mg": number
-    }
+    },
+    "sources": [
+      {
+        "title": "string",
+        "url": "string",
+        "snippet": "string",
+        "used_for": ["nutrition", "ingredients", "testosterone", or "other"]
+      }
+    ]
   }
 }
 
-Guidelines for testosterone impact:
-- High protein foods (especially red meat, eggs, fish) boost testosterone
-- Healthy fats (omega-3s, monounsaturated) support hormone production
-- Fiber helps with insulin sensitivity and testosterone
-- Processed foods, trans fats, and excessive sugar negatively impact testosterone
-- Cholesterol is a precursor to testosterone synthesis
-- Score 90-100: Excellent for testosterone
-- Score 70-89: Good for testosterone  
-- Score 50-69: Moderate impact
-- Score 0-49: Poor for testosterone
+Guidelines:
+- Analyze the image data and web search results
+- Identify seed oils (soybean, canola, sunflower, cottonseed, etc.)
+- Assess processing level based on ingredients and additives
+- Identify estrogenic compounds (BPA, phthalates, etc.)
+- Check for microplastics in packaging or ingredients
+- Mark ingredients with testosterone impact in parentheses
+- Calculate macro balance based on protein, carbs, and fats
+- Provide comprehensive testosterone impact assessment
+- Use scientific knowledge for accurate analysis`;
 
-Use your knowledge of nutrition and testosterone optimization to provide accurate assessments.`;
+    const userPrompt = `Analyze this product comprehensively using the image data and web search results:
 
-    const userPrompt = `Analyze this food item for testosterone impact:
+Product Data from Image:
+${JSON.stringify(productData, null, 2)}
 
-Food Name: ${name}
-Calories: ${kcal} kcal
-Portion Size: ${portion_g} grams
+Web Search Results:
+${searchBlock}
 
-Please provide the testosterone impact analysis in the specified JSON format.`;
+Please provide comprehensive analysis including nutrition facts, ingredients analysis, processing assessment, and testosterone impact. Return your response as JSON.`;
 
     const response = await OpenAIService.createChatCompletion([
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ], {
       temperature: 0.1,
-      max_tokens: 800
+      max_tokens: 1500
     });
 
     const responseContent = response.choices[0].message.content;
@@ -454,30 +413,12 @@ class ValidationService {
     }
     return { isValid: true };
   }
-
-  /**
-   * Validate testosterone analysis request
-   * @param {object} body - Request body
-   * @returns {object} Validation result
-   */
-  static validateTestosteroneAnalysisRequest(body) {
-    const { name, kcal, portion_g } = body;
-    
-    if (!name || !kcal || !portion_g) {
-      return { 
-        isValid: false, 
-        error: "Missing required fields: name, kcal, and portion_g are required" 
-      };
-    }
-    
-    return { isValid: true };
-  }
 }
 
 // ------------------
 // API Routes
 // ------------------
-app.post("/analyze-image", async (req, res) => {
+app.post("/analyze-comprehensive", async (req, res) => {
   try {
     // Validate request
     const validation = ValidationService.validateImageAnalysisRequest(req.body);
@@ -486,7 +427,7 @@ app.post("/analyze-image", async (req, res) => {
     }
 
     const { imageUrl } = req.body;
-    console.log('Processing image analysis for URL:', imageUrl);
+    console.log('Processing comprehensive analysis for image URL:', imageUrl);
 
     // Analyze product image
     const productData = await ImageAnalysisService.analyzeProductImage(imageUrl);
@@ -500,56 +441,23 @@ app.post("/analyze-image", async (req, res) => {
     const searchResults = await ImageAnalysisService.performWebSearch(primaryQuery, productData);
     console.log(`Found ${searchResults.length} search results`);
 
-    // Extract nutrition information
-    const finalExtract = await ImageAnalysisService.extractNutritionInfo(searchResults, productData);
+    // Perform comprehensive analysis
+    const comprehensiveResult = await ComprehensiveAnalysisService.analyzeComprehensive(productData, searchResults);
 
-    if (!finalExtract) {
-      return res.json({
+    if (!comprehensiveResult) {
+      return res.status(500).json({
+        error: "Failed to parse comprehensive analysis response",
         productData,
         searchQuery: primaryQuery,
-        searchResults: searchResults.slice(0, 6),
-        note: "LLM did not return valid JSON"
+        searchResults: searchResults.slice(0, 6)
       });
     }
 
-    // Return successful response
-    return res.json({
-      data: finalExtract
-    });
+    // Return comprehensive analysis
+    return res.json(comprehensiveResult);
 
   } catch (error) {
-    console.error('Image analysis error:', error);
-    res.status(500).json({ 
-      error: "internal_error", 
-      details: error.message 
-    });
-  }
-});
-
-app.post("/analyze-testosterone-impact", async (req, res) => {
-  try {
-    // Validate request
-    const validation = ValidationService.validateTestosteroneAnalysisRequest(req.body);
-    if (!validation.isValid) {
-      return res.status(400).json({ error: validation.error });
-    }
-
-    const { name, kcal, portion_g } = req.body;
-    console.log('Processing testosterone analysis for:', name);
-
-    // Analyze testosterone impact
-    const result = await TestosteroneAnalysisService.analyzeTestosteroneImpact(name, kcal, portion_g);
-
-    if (!result) {
-      return res.status(500).json({
-        error: "Failed to parse AI response"
-      });
-    }
-
-    return res.json(result);
-
-  } catch (error) {
-    console.error('Testosterone analysis error:', error);
+    console.error('Comprehensive analysis error:', error);
     res.status(500).json({ 
       error: "internal_error", 
       details: error.message 
@@ -596,4 +504,5 @@ app.use((req, res) => {
 app.listen(config.port, () => {
   console.log(`Server running on port ${config.port}`);
   console.log(`Health check available at: http://localhost:${config.port}/health`);
+  console.log(`Comprehensive analysis endpoint: POST http://localhost:${config.port}/analyze-comprehensive`);
 });

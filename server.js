@@ -93,6 +93,22 @@ class Utils {
       })
       .join("\n\n");
   }
+
+  /**
+   * Format scraped content for LLM consumption
+   * @param {Array} scrapedResults - Array of scraped content
+   * @param {number} maxResults - Maximum number of results
+   * @returns {string} Formatted scraped content
+   */
+  static formatScrapedContentForLLM(scrapedResults, maxResults = 5) {
+    return scrapedResults
+      .slice(0, maxResults)
+      .map((r, i) => {
+        const content = (r.content || "").replace(/\s+/g, " ").trim().slice(0, 2000);
+        return `${i + 1}. Title: ${r.title}\n   URL: ${r.url}\n   Content: ${content}`;
+      })
+      .join("\n\n");
+  }
 }
 
 // ------------------
@@ -127,6 +143,112 @@ class BraveSearchService {
       console.error('Brave search failed:', error.message);
       throw error;
     }
+  }
+}
+
+class WebScrapingService {
+  /**
+   * Scrape content from a URL
+   * @param {string} url - URL to scrape
+   * @param {number} maxLength - Maximum content length
+   * @returns {Promise<object|null>} Scraped content or null
+   */
+  static async scrapeUrl(url, maxLength = 3000) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        },
+        timeout: 10000
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const html = await response.text();
+      
+      // Extract text content from HTML
+      const textContent = this.extractTextFromHTML(html);
+      
+      if (!textContent) {
+        return null;
+      }
+
+      return {
+        url: url,
+        content: textContent.slice(0, maxLength),
+        success: true
+      };
+
+    } catch (error) {
+      console.warn(`Failed to scrape ${url}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Extract text content from HTML
+   * @param {string} html - HTML content
+   * @returns {string} Extracted text
+   */
+  static extractTextFromHTML(html) {
+    try {
+      // Remove script and style tags
+      let text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+      text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+      
+      // Remove HTML tags
+      text = text.replace(/<[^>]+>/g, ' ');
+      
+      // Decode HTML entities
+      text = text.replace(/&nbsp;/g, ' ');
+      text = text.replace(/&amp;/g, '&');
+      text = text.replace(/&lt;/g, '<');
+      text = text.replace(/&gt;/g, '>');
+      text = text.replace(/&quot;/g, '"');
+      text = text.replace(/&#39;/g, "'");
+      
+      // Clean up whitespace
+      text = text.replace(/\s+/g, ' ').trim();
+      
+      return text;
+    } catch (error) {
+      console.warn('Failed to extract text from HTML:', error.message);
+      return '';
+    }
+  }
+
+  /**
+   * Scrape multiple URLs and return content
+   * @param {Array} searchResults - Array of search results with URLs
+   * @param {number} maxUrls - Maximum number of URLs to scrape
+   * @returns {Promise<Array>} Array of scraped content
+   */
+  static async scrapeMultipleUrls(searchResults, maxUrls = 5) {
+    const urlsToScrape = searchResults.slice(0, maxUrls);
+    const scrapedResults = [];
+
+    for (const result of urlsToScrape) {
+      try {
+        const scrapedContent = await this.scrapeUrl(result.link);
+        if (scrapedContent && scrapedContent.success) {
+          scrapedResults.push({
+            title: result.title,
+            url: result.link,
+            content: scrapedContent.content
+          });
+        }
+        
+        // Add small delay to be respectful to servers
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (error) {
+        console.warn(`Failed to scrape ${result.link}:`, error.message);
+      }
+    }
+
+    return scrapedResults;
   }
 }
 
@@ -282,9 +404,16 @@ class ComprehensiveAnalysisService {
    */
   static async analyzeComprehensive(productData, searchResults) {
     const topResults = searchResults.slice(0, 6);
-    const searchBlock = Utils.formatSearchResultsForLLM(topResults, 6, 300);
+    
+    // Scrape content from top search results
+    console.log('Scraping content from top search results...');
+    const scrapedContent = await WebScrapingService.scrapeMultipleUrls(topResults, 5);
+    console.log(`Successfully scraped ${scrapedContent.length} pages`);
+    
+    // Format scraped content for LLM
+    const scrapedBlock = Utils.formatScrapedContentForLLM(scrapedContent, 5);
 
-    const systemPrompt = `You are a comprehensive nutrition and testosterone optimization expert. Analyze the product data and web search results to provide detailed analysis.
+    const systemPrompt = `You are a comprehensive nutrition and testosterone optimization expert. Analyze the product data and detailed web content to provide accurate analysis.
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -357,7 +486,7 @@ Return ONLY valid JSON with this exact structure:
       {
         "title": "string",
         "url": "string",
-        "snippet": "string",
+        "content_summary": "string",
         "used_for": ["nutrition", "ingredients", "testosterone", or "other"]
       }
     ]
@@ -365,7 +494,8 @@ Return ONLY valid JSON with this exact structure:
 }
 
 Guidelines:
-- Analyze the image data and web search results
+- Analyze the image data and detailed web content
+- Use the scraped page content for accurate nutrition information
 - Identify seed oils (soybean, canola, sunflower, cottonseed, etc.)
 - Assess processing level based on ingredients and additives
 - Identify estrogenic compounds (BPA, phthalates, etc.)
@@ -373,17 +503,17 @@ Guidelines:
 - Mark ingredients with testosterone impact in parentheses
 - Calculate macro balance based on protein, carbs, and fats
 - Provide comprehensive testosterone impact assessment
-- Use scientific knowledge for accurate analysis`;
+- Use scientific knowledge and detailed web content for accurate analysis`;
 
-    const userPrompt = `Analyze this product comprehensively using the image data and web search results:
+    const userPrompt = `Analyze this product comprehensively using the image data and detailed web content:
 
 Product Data from Image:
 ${JSON.stringify(productData, null, 2)}
 
-Web Search Results:
-${searchBlock}
+Detailed Web Content (Scraped from top search results):
+${scrapedBlock}
 
-Please provide comprehensive analysis including nutrition facts, ingredients analysis, processing assessment, and testosterone impact. Return your response as JSON.`;
+Please provide comprehensive analysis including nutrition facts, ingredients analysis, processing assessment, and testosterone impact. Use the detailed web content to provide accurate and specific information. Return your response as JSON.`;
 
     const response = await OpenAIService.createChatCompletion([
       { role: "system", content: systemPrompt },
@@ -453,8 +583,15 @@ app.post("/analyze-comprehensive", async (req, res) => {
       });
     }
 
-    // Return comprehensive analysis
-    return res.json(comprehensiveResult);
+    // Return comprehensive analysis with additional context
+    return res.json({
+      ...comprehensiveResult,
+      debug: {
+        searchQuery: primaryQuery,
+        searchResultsCount: searchResults.length,
+        scrapedPagesCount: Math.min(5, searchResults.length)
+      }
+    });
 
   } catch (error) {
     console.error('Comprehensive analysis error:', error);

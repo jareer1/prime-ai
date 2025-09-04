@@ -413,97 +413,78 @@ class ComprehensiveAnalysisService {
     // Format scraped content for LLM
     const scrapedBlock = Utils.formatScrapedContentForLLM(scrapedContent, 5);
 
-    const systemPrompt = `You are a comprehensive nutrition and testosterone optimization expert. Analyze the product data and detailed web content to provide accurate analysis.
+    const systemPrompt = `You are a nutrition analyst. Given the photo of a food item, perform ALL of the following steps and return results in JSON only:
 
-Return ONLY valid JSON with this exact structure:
+Processing Check
+Classify the food as ✅ Whole (minimally processed) or ⚠ Processed (heavily processed).
+
+Brand & Label Detection
+Try to identify the brand name if present.
+
+If brand is detected, include it.
+
+If no brand, use "Unknown".
+Also estimate macros if no verified label is available.
+
+Macro Balance Analysis
+Estimate total calories and macronutrient split (grams and % of protein, fat, carbs).
+Compare against testosterone-supportive macro balance:
+
+Protein: 20–30%
+
+Fat: 30–40%
+
+Carbs: 30–40%
+Then output a Macro Balance Score (0–100) with traffic light: 🟢 good / 🟡 moderate / 🔴 poor.
+
+Ingredient Hormone Check
+If ingredients are mentioned or can be inferred, flag testosterone disruptors:
+
+✅ No disruptors
+
+⚠ Possible disruptors
+❌ High disruptors
+
+Testosterone Score
+Combine the Macro Balance Score and Ingredient Risk equally:
+
+Macro Balance contributes 50%.
+
+Hormone Disruptor risk contributes 50% (100 = ✅, 65 = ⚠, 20 = ❌).
+Output a final Testosterone Score (0–100) and category:
+
+🟢 Excellent (85–100)
+
+🟡 Moderate (60–84)
+
+🔴 Poor (0–59)
+
+
+—
+
+
 {
-  "status": true,
-  "message": null,
-  "data": {
-    "product_info": {
-      "product_name": "string",
-      "brand": "string",
-      "net_weight": "string",
-      "barcode_or_upc": "string",
-      "visible_text": ["string"]
-    },
-    "nutrition_facts": {
-      "serving_size": "string",
-      "calories": "string",
-      "total_fat": "string",
-      "saturated_fat": "string",
-      "trans_fat": "string",
-      "cholesterol": "string",
-      "sodium": "string",
-      "total_carbohydrate": "string",
-      "dietary_fiber": "string",
-      "total_sugars": "string",
-      "added_sugars": "string",
-      "protein": "string",
-      "vitamin_d": "string",
-      "calcium": "string",
-      "iron": "string",
-      "potassium": "string"
-    },
-    "ingredients": [
-      {
-        "text": "ingredient name",
-        "testosterone_impact": "positive|negative|neutral",
-        "notes": "brief explanation"
-      }
-    ],
-    "allergens": ["string"],
-    "seed_oils": ["list of oils used"],
-    "processed_profile": {
-      "score": number (1-10, where 1 is minimal processing, 10 is highly processed),
-      "level": "Low|Medium|High",
-      "added_synthetic_sugars": ["list of added or synthetic sugars"],
-      "additives": ["list of additives"],
-      "refined_carbs": ["list of refined carbohydrates"]
-    },
-    "estrogenic_compounds": ["list of estrogenic compounds"],
-    "microplastics": ["list of microplastics if any"],
-    "t_score_impact": {
-      "label": "Optimized|Moderate|Poor",
-      "score_perc": number (0-100),
-      "macro_balance": "Good|Fair|Poor",
-      "hormone_disruptor": number (0-2, where 0 is no, 1 is mild, 2 is high)
-    },
-    "micros": {
-      "protein_g": number,
-      "carbs": {
-        "fiber_g": number,
-        "sugar_g": number,
-        "added_sugar_g": number
-      },
-      "fats": {
-        "saturated_g": number,
-        "trans_g": number
-      },
-      "cholesterol_mg": number
-    },
-    "sources": [
-      {
-        "title": "string",
-        "url": "string",
-        "content_summary": "string",
-        "used_for": ["nutrition", "ingredients", "testosterone", or "other"]
-      }
-    ]
-  }
-}
-
-Guidelines:
-- Analyze the image data and detailed web content
-- Use the scraped page content for accurate nutrition information
-- Identify seed oils (soybean, canola, sunflower, cottonseed, etc.)
-- Assess processing level based on ingredients and additives
-- Identify estrogenic compounds (BPA, phthalates, etc.)
-- Check for microplastics in packaging or ingredients
-- Mark ingredients with testosterone impact in parentheses
-- Calculate macro balance based on protein, carbs, and fats
-- Provide comprehensive testosterone impact assessment
-- Use scientific knowledge and detailed web content for accurate analysis`;
+"processing": "Whole | Processed",
+  "brand": "<brand name or Unknown>",
+  "nutrition": {
+    "calories": <number>,
+    "protein_g": <number>,
+    "protein_pct": <number>,
+    "fat_g": <number>,
+    "fat_pct": <number>,
+    "carbs_g": <number>,
+    "carbs_pct": <number>
+  },
+  "macro_balance_score": {
+    "score": <0-100>,
+    "label": "🟢 | 🟡 | 🔴"
+  },
+  "ingredient_risk": "✅ | ⚠ | ❌",
+  "testosterone_score": {
+    "score": <0-100>,
+    "label": "🟢 | 🟡 | 🔴"
+  }
+}`;
 
     const userPrompt = `Analyze this product comprehensively using the image data and detailed web content:
 

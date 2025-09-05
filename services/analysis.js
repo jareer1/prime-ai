@@ -191,6 +191,9 @@ Output a Final Testosterone Score (0–100) with category:
 
 🔴 Poor (0–59)
 
+IMPORTANT numeric formatting:
+- All quantities (calories, grams, milligrams, macro values, scores) MUST be numbers (decimals allowed), NOT strings, and MUST NOT include units in the values.
+- If a quantity is not available or unknown, use 0 (not null).
 
 {
     "product_info": {
@@ -202,21 +205,21 @@ Output a Final Testosterone Score (0–100) with category:
     },
     "nutrition_facts": {
       "serving_size": null,
-      "calories": "<nutrition.calories> kcal",
-      "total_fat": "<nutrition.fat_g> g",
-      "saturated_fat": null,
-      "trans_fat": null,
-      "cholesterol": null,
-      "sodium": null,
-      "total_carbohydrate": "<nutrition.carbs_g> g",
-      "dietary_fiber": null,
-      "total_sugars": null,
-      "added_sugars": null,
-      "protein": "<nutrition.protein_g> g",
-      "vitamin_d": null,
-      "calcium": null,
-      "iron": null,
-      "potassium": null
+      "calories": <nutrition.calories or 0>,
+      "total_fat": <nutrition.fat_g or 0>,
+      "saturated_fat": <saturated_fat_g or 0>,
+      "trans_fat": <trans_fat_g or 0>,
+      "cholesterol": <cholesterol_mg or 0>,
+      "sodium": <sodium_mg or 0>,
+      "total_carbohydrate": <nutrition.carbs_g or 0>,
+      "dietary_fiber": <fiber_g or 0>,
+      "total_sugars": <sugar_g or 0>,
+      "added_sugars": <added_sugar_g or 0>,
+      "protein": <nutrition.protein_g or 0>,
+      "vitamin_d": <vitamin_d_mcg or 0>,
+      "calcium": <calcium_mg or 0>,
+      "iron": <iron_mg or 0>,
+      "potassium": <potassium_mg or 0>
     },
     "ingredients": [
       /* Optional: expand into objects like
@@ -230,7 +233,7 @@ Output a Final Testosterone Score (0–100) with category:
     "allergens": [],
     "seed_oils": [],
     "processed_profile": {
-      "score": "<map from processing: Whole→1–3, Processed→7–10>",
+      "score": <processed_profile_score>,
       "level": "<Low | Medium | High>",
       "added_synthetic_sugars": [],
       "additives": [],
@@ -240,22 +243,22 @@ Output a Final Testosterone Score (0–100) with category:
     "microplastics": [],
     "t_score_impact": {
       "label": "<map from testosterone_score.label: 🟢→Good, 🟡→Moderate, 🔴→Poor>",
-      "score_perc": "<testosterone_score.score>",
+      "score_perc": <testosterone_score.score>,
       "macro_balance": "<map from macro_balance_score.label: 🟢→Good, 🟡→Moderate, 🔴→Poor>",
-      "hormone_disruptor": "<number of disruptors detected (length of ingredient_risk.disruptors_found)>"
+      "hormone_disruptor": <count_of_disruptors>
     },
     "macros": {
-      "protein_g": "<nutrition.protein_g>",
+      "protein_g": <nutrition.protein_g or 0>,
       "carbs": {
-        "fiber_g": null,
-        "sugar_g": null,
-        "added_sugar_g": null
+        "fiber_g": <fiber_g or 0>,
+        "sugar_g": <sugar_g or 0>,
+        "added_sugar_g": <added_sugar_g or 0>
       },
       "fats": {
-        "saturated_g": null,
-        "trans_g": null
+        "saturated_g": <saturated_fat_g or 0>,
+        "trans_g": <trans_fat_g or 0>
       },
-      "cholesterol_mg": null
+      "cholesterol_mg": <cholesterol_mg or 0>
     },
     "sources": []
   },
@@ -287,9 +290,9 @@ Output a Final Testosterone Score (0–100) with category:
       "testosterone_score": {
         "score": "<testosterone_score.score>",
         "label": "<testosterone_score.label>"
-      }
-    }
-  }
+      }
+    }
+  }
 `;
 
     const userPrompt = `Analyze this product comprehensively using the image data and detailed web content:

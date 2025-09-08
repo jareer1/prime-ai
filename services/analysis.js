@@ -17,11 +17,14 @@ Return only JSON with fields:
 {
   "product_name": string|null,
   "brand": string|null,
-  "net_weight": string|null,
+  "net_weight": integer|null,
   "barcode_or_upc": string|null,
   "visible_text": string[],
   "confidence": "high"|"medium"|"low"
-}`
+}
+
+Rules:
+- net_weight MUST be an integer number of grams; if unknown, use 0.`
           },
           {
             type: "image_url",
@@ -194,17 +197,19 @@ Output a Final Testosterone Score (0–100) with category:
 IMPORTANT numeric formatting:
 - All quantities (calories, grams, milligrams, macro values, scores) MUST be numbers (decimals allowed), NOT strings, and MUST NOT include units in the values.
 - If a quantity is not available or unknown, use 0 (not null).
+- serving_size MUST be an integer (grams); if unknown, use 0.
+- product_info.net_weight MUST be an integer (grams); if unknown, use 0.
 
 {
     "product_info": {
       "product_name": "<product name or Unknown>",
       "brand": "<brand name or Unknown>",
-      "net_weight": null,
+      "net_weight": <net_weight_g or 0>,
       "barcode_or_upc": null,
       "visible_text": []
     },
     "nutrition_facts": {
-      "serving_size": null,
+      "serving_size": <serving_size_g or 0>,
       "calories": <nutrition.calories or 0>,
       "total_fat": <nutrition.fat_g or 0>,
       "saturated_fat": <saturated_fat_g or 0>,
